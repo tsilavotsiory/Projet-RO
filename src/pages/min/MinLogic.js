@@ -1,18 +1,42 @@
-import { parseValue } from "../../utils/math";
+// D:\projet-ro\src\pages\min\MinLogic.js
+import { parseValue, parseCoeff } from "../../utils/math";
 
 export function buildMinModel({ consInputs, objInputs, kObjInput }) {
   const sense = ">=";
-  const m = 3;
-
   const cons = [];
-  for (let i = 0; i < m; i++) {
-    const A = parseValue(consInputs[i]?.A);
-    const B = parseValue(consInputs[i]?.B);
-    const C = parseValue(consInputs[i]?.C);
 
-    if (A == null || B == null || C == null) throw new Error("Saisis A, B, C pour les 3 contraintes.");
-    if (!isFinite(A) || !isFinite(B) || !isFinite(C)) throw new Error("Coefficients invalides (ex: 3/0).");
+  for (let i = 0; i < consInputs.length; i++) {
+    const row = consInputs[i] || {};
+
+    // ✅ A/B : vide => 0
+    const A = parseCoeff(row.A);
+    const B = parseCoeff(row.B);
+
+    // ✅ C : obligatoire si la contrainte est utilisée
+    const C = parseValue(row.C);
+
+    const allEmpty = (row.A ?? "").toString().trim() === "" &&
+                     (row.B ?? "").toString().trim() === "" &&
+                     (row.C ?? "").toString().trim() === "";
+    if (allEmpty) continue;
+
+    if (C == null) {
+      throw new Error(`Contrainte ${i + 1}: C est obligatoire (A/B peuvent être vides = 0).`);
+    }
+
+    if (!isFinite(A) || !isFinite(B) || !isFinite(C)) {
+      throw new Error("Coefficients invalides (ex: 3/0).");
+    }
+
+    if (Math.abs(A) < 1e-12 && Math.abs(B) < 1e-12) {
+      throw new Error(`Contrainte ${i + 1}: A et B ne peuvent pas être tous les deux nuls.`);
+    }
+
     cons.push({ A, B, C, sense });
+  }
+
+  if (cons.length === 0) {
+    throw new Error("Aucune contrainte valide. Remplis au moins une contrainte.");
   }
 
   const p = parseValue(objInputs.p);
@@ -28,7 +52,6 @@ export function buildMinModel({ consInputs, objInputs, kObjInput }) {
     mode: "min",
     cons,
     obj: { p, q, kLine },
-    /* plus proche du PDF exemple 2 */
     viewBox: { xmin: -1, xmax: 4, ymin: 0, ymax: 4.8, pad: 48 },
   };
 

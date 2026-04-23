@@ -3,11 +3,9 @@ export function senseSymbol(sense) {
 }
 
 export function xSub(i) {
-  // x₁ / x₂
   return i === 1 ? "x\u2081" : "x\u2082";
 }
 
-// Accept: "3/2", "-3/2", " 3 / 2 ", decimals "." or ","
 export function parseValue(str) {
   if (str == null) return null;
   let s = String(str).trim();
@@ -28,6 +26,14 @@ export function parseValue(str) {
   return NaN;
 }
 
+// ✅ vide => 0 (pour A,B,p,q)
+export function parseCoeff(str) {
+  if (str == null) return null;
+  const s = String(str).trim();
+  if (s === "") return 0;
+  return parseValue(s);
+}
+
 export function approxFraction(x, maxDen = 60) {
   if (!isFinite(x)) return null;
   const sign = x < 0 ? -1 : 1;
@@ -45,10 +51,8 @@ export function approxFraction(x, maxDen = 60) {
     const k2 = a * k1 + k0;
     if (k2 > maxDen) break;
 
-    h0 = h1;
-    h1 = h2;
-    k0 = k1;
-    k1 = k2;
+    h0 = h1; h1 = h2;
+    k0 = k1; k1 = k2;
 
     const frac = h1 / k1;
     if (Math.abs(frac - x) < 1e-12) break;
@@ -77,13 +81,6 @@ export function fmtSmart(x) {
   return (Math.round(x * 100) / 100).toFixed(2);
 }
 
-// version FR (3,5 au lieu de 3.5) — garde fractions
-export function fmtSmartFR(x) {
-  const s = fmtSmart(x);
-  if (s.includes("/")) return s;
-  return s.replace(".", ",");
-}
-
 function fmtTerm(k, v) {
   if (k === 0) return "";
   if (k === 1) return `${v}`;
@@ -92,10 +89,8 @@ function fmtTerm(k, v) {
 }
 
 export function fmtExpr(A, B) {
-  const v1 = xSub(1),
-    v2 = xSub(2);
-  const a = Number(A),
-    b = Number(B);
+  const v1 = xSub(1), v2 = xSub(2);
+  const a = Number(A), b = Number(B);
   const t1 = fmtTerm(a, v1);
   const t2 = fmtTerm(Math.abs(b), v2);
 

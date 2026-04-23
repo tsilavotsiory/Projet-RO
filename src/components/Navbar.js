@@ -51,8 +51,9 @@ export default function Navbar() {
           <div style={dot} />
           <div>
             <div style={{ fontWeight: 950 }}>Projet RO — PL Graphique</div>
+            {/* ✅ enlever "style PDF" */}
             <div style={{ fontSize: 12, fontWeight: 750, color: "rgba(71,85,105,1)" }}>
-              MAX / MIN — style PDF
+              MAX / MIN
             </div>
           </div>
         </div>

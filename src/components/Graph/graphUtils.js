@@ -1,3 +1,4 @@
+// D:\projet-ro\src\components\Graph\graphUtils.js
 import { fmtEqEQ, fmtSmart } from "../../utils/math";
 
 /* ==================== CORE MATH ==================== */
@@ -68,6 +69,8 @@ function objVal(pt, p, q) {
 
 function solveLP2D(model) {
   const consAll = model.cons.map((c) => ({ ...c }));
+
+  // Non-négativité
   const x1NonNeg = { A: 1, B: 0, C: 0, sense: ">=" };
   const x2NonNeg = { A: 0, B: 1, C: 0, sense: ">=" };
   consAll.push(x1NonNeg, x2NonNeg);
@@ -135,7 +138,73 @@ function segPointsInBox(line, box) {
   return [u[0], u[1]];
 }
 
-/* ==================== HELPERS ==================== */
+/* ==================== VIEWBOX + TICKS ==================== */
+function niceStep(range) {
+  const raw = range / 8;
+  if (!isFinite(raw) || raw <= 0) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const n = raw / pow;
+  const m = n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10;
+  return m * pow;
+}
+
+function parseTickStep(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function snapBoxToStep(box, stepX, stepY) {
+  return {
+    xmin: Math.floor(box.xmin / stepX) * stepX,
+    xmax: Math.ceil(box.xmax / stepX) * stepX,
+    ymin: Math.floor(box.ymin / stepY) * stepY,
+    ymax: Math.ceil(box.ymax / stepY) * stepY,
+  };
+}
+
+function computeAutoViewBox(model, solved) {
+  const pts = [];
+
+  if (solved?.feasVerts?.length) pts.push(...solved.feasVerts);
+
+  if (Array.isArray(model.extraPoints)) {
+    for (const p of model.extraPoints) {
+      if (p && isFinite(p.x) && isFinite(p.y)) pts.push({ x: p.x, y: p.y });
+    }
+  }
+
+  const cons = model.cons || [];
+  for (let i = 0; i < cons.length; i++) {
+    for (let j = i + 1; j < cons.length; j++) {
+      const p = intersectEq(cons[i], cons[j]);
+      if (p && isFinite(p.x) && isFinite(p.y)) pts.push(p);
+    }
+  }
+
+  if (pts.length === 0) return { xmin: -2, xmax: 7, ymin: -2, ymax: 7 };
+
+  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+  for (const p of pts) {
+    xmin = Math.min(xmin, p.x);
+    xmax = Math.max(xmax, p.x);
+    ymin = Math.min(ymin, p.y);
+    ymax = Math.max(ymax, p.y);
+  }
+
+  const dx = Math.max(1, xmax - xmin);
+  const dy = Math.max(1, ymax - ymin);
+  xmin -= 0.12 * dx;
+  xmax += 0.12 * dx;
+  ymin -= 0.12 * dy;
+  ymax += 0.12 * dy;
+
+  if (Math.abs(xmax - xmin) < 1e-9) { xmin -= 1; xmax += 1; }
+  if (Math.abs(ymax - ymin) < 1e-9) { ymin -= 1; ymax += 1; }
+
+  return { xmin, xmax, ymin, ymax };
+}
+
+/* ==================== DRAW HELPERS ==================== */
 function arrowHead(ctx, x, y, angle, size = 8) {
   ctx.beginPath();
   ctx.moveTo(x, y);
@@ -148,8 +217,8 @@ function arrowHead(ctx, x, y, angle, size = 8) {
 function worldNormalToCanvas(worldToCanvas, p, nx, ny) {
   const c0 = worldToCanvas(p);
   const c1 = worldToCanvas({ x: p.x + nx, y: p.y + ny });
-  let vx = c1.x - c0.x;
-  let vy = c1.y - c0.y;
+  const vx = c1.x - c0.x;
+  const vy = c1.y - c0.y;
   const L = Math.hypot(vx, vy) || 1;
   return { x: vx / L, y: vy / L };
 }
@@ -197,32 +266,119 @@ function drawTicksForbidden(ctx, con, box, scale, worldToCanvas) {
   ctx.restore();
 }
 
-function drawText(ctx, text, x, y, font = "16px Times New Roman, serif") {
+/* ==================== EQUATIONS (ANTI COLLISION) ==================== */
+function pickTopPointOnSeg(seg, box) {
+  const p0 = seg[0], p1 = seg[1];
+  const topEnd = p0.y >= p1.y ? p0 : p1;
+  const botEnd = p0.y >= p1.y ? p1 : p0;
+
+  if (Math.abs(topEnd.y - box.ymax) < 1e-9) {
+    const t = 0.12;
+    return { wp: { x: topEnd.x + (botEnd.x - topEnd.x) * t, y: topEnd.y + (botEnd.y - topEnd.y) * t } };
+  }
+
+  const targetY = box.ymax - 0.12 * (box.ymax - box.ymin);
+  const dy = p1.y - p0.y;
+  let t = 0.7;
+  if (Math.abs(dy) > 1e-12) t = (targetY - p0.y) / dy;
+
+  t = Math.max(0.08, Math.min(0.92, t));
+  return { wp: { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t } };
+}
+
+function upNormalCanvas(worldToCanvas, wp, A, B) {
+  const nLen = Math.hypot(A, B) || 1;
+  const nxW = A / nLen;
+  const nyW = B / nLen;
+  const nv1 = worldNormalToCanvas(worldToCanvas, wp, nxW, nyW);
+  const nv2 = { x: -nv1.x, y: -nv1.y };
+  return nv1.y < nv2.y ? nv1 : nv2;
+}
+
+function drawEquationsOnTheirLines(ctx, model, segs, box, worldToCanvas, viewport) {
+  const font = "16px Times New Roman, serif";
+  const placed = [];
+  const collide = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
   ctx.save();
   ctx.font = font;
   ctx.fillStyle = "#111";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, x, y);
+
+  for (let i = 0; i < model.cons.length; i++) {
+    const seg = segs[i];
+    if (!seg) continue;
+
+    const con = model.cons[i];
+    const txt = fmtEqEQ(con.A, con.B, con.C);
+    const w = ctx.measureText(txt).width;
+    const h = 18;
+
+    let { wp } = pickTopPointOnSeg(seg, box);
+
+    const dx = seg[1].x - seg[0].x;
+    const dy = seg[1].y - seg[0].y;
+    const L = Math.hypot(dx, dy) || 1;
+    const ux = dx / L;
+    const uy = dy / L;
+
+    const upNv = upNormalCanvas(worldToCanvas, wp, con.A, con.B);
+    const offsetPx = 16;
+
+    let x = 0, y = 0, ok = false;
+
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const slide = (attempt * 0.06) * L;
+      const slideDir = attempt % 2 === 0 ? 1 : -1;
+
+      const wpTry = { x: wp.x + ux * slide * slideDir, y: wp.y + uy * slide * slideDir };
+      const cp = worldToCanvas(wpTry);
+
+      const extra = attempt >= 10 ? 14 : 0;
+      x = cp.x + upNv.x * (offsetPx + extra);
+      y = cp.y + upNv.y * (offsetPx + extra);
+
+      x = Math.max(6, Math.min(viewport.width - w - 6, x));
+      y = Math.max(10, Math.min(viewport.height - 10, y));
+
+      const rect = { x, y: y - h / 2, w, h };
+      if (!placed.some((p) => collide(rect, p))) {
+        placed.push(rect);
+        ok = true;
+        break;
+      }
+    }
+
+    if (!ok) placed.push({ x, y: y - h / 2, w, h });
+    ctx.fillText(txt, x, y);
+  }
+
   ctx.restore();
 }
 
-function drawEqNearLine(ctx, seg, worldToCanvas, text, t, nx, ny, offsetPx, font = "16px Times New Roman, serif") {
-  const p0 = seg[0];
-  const p1 = seg[1];
+/* ==================== REGION (S AU CENTRE) ==================== */
+function polygonCentroid(poly) {
+  let A = 0, cx = 0, cy = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = poly[(i + 1) % poly.length];
+    const cross = p.x * q.y - q.x * p.y;
+    A += cross;
+    cx += (p.x + q.x) * cross;
+    cy += (p.y + q.y) * cross;
+  }
 
-  const wp = {
-    x: p0.x + (p1.x - p0.x) * t,
-    y: p0.y + (p1.y - p0.y) * t,
-  };
+  A *= 0.5;
+  if (Math.abs(A) < 1e-12) {
+    const sx = poly.reduce((s, p) => s + p.x, 0);
+    const sy = poly.reduce((s, p) => s + p.y, 0);
+    return { x: sx / poly.length, y: sy / poly.length };
+  }
 
-  const cp = worldToCanvas(wp);
-  const nv = worldNormalToCanvas(worldToCanvas, wp, nx, ny);
-
-  const x = cp.x + nv.x * offsetPx;
-  const y = cp.y + nv.y * offsetPx;
-
-  drawText(ctx, text, x, y, font);
+  cx /= 6 * A;
+  cy /= 6 * A;
+  return { x: cx, y: cy };
 }
 
 function drawFeasibleRegionMax(ctx, poly, worldToCanvas) {
@@ -246,7 +402,8 @@ function drawFeasibleRegionMax(ctx, poly, worldToCanvas) {
   ctx.lineWidth = 4;
   ctx.stroke();
 
-  const cc = worldToCanvas({ x: 1.55, y: 2.0 });
+  const cent = polygonCentroid(poly);
+  const cc = worldToCanvas(cent);
 
   ctx.fillStyle = "#ff0000";
   ctx.font = "700 36px Times New Roman, serif";
@@ -284,9 +441,25 @@ export function drawGraph(ctx, viewport, model) {
 
   const { best, hull } = solved;
   const isMax = model.mode === "max";
-  const isMin = model.mode === "min";
 
-  const box = model.viewBox || { xmin: -2, xmax: 7, ymin: -2, ymax: 7 };
+  const showSolution = !!model.showSolution;
+  const t = Math.max(0, Math.min(1, Number(model.animT ?? (showSolution ? 1 : 0))));
+
+  // AutoViewBox
+  const baseBox = model.autoViewBox
+    ? computeAutoViewBox(model, solved)
+    : (model.viewBox || { xmin: -2, xmax: 7, ymin: -2, ymax: 7 });
+
+  const userStepX = parseTickStep(model.scaleCm?.xUnitCm);
+  const userStepY = parseTickStep(model.scaleCm?.yUnitCm);
+
+  const fallbackStepX = niceStep(baseBox.xmax - baseBox.xmin);
+  const fallbackStepY = niceStep(baseBox.ymax - baseBox.ymin);
+
+  const stepX = userStepX || fallbackStepX;
+  const stepY = userStepY || fallbackStepY;
+
+  const box = snapBoxToStep(baseBox, stepX, stepY);
   const { xmin, xmax, ymin, ymax } = box;
 
   const W = viewport.width;
@@ -297,6 +470,7 @@ export function drawGraph(ctx, viewport, model) {
 
   const xr = xmax - xmin;
   const yr = ymax - ymin;
+
   const scale = Math.min(graphW / xr, graphH / yr);
 
   const plotW = xr * scale;
@@ -354,7 +528,9 @@ export function drawGraph(ctx, viewport, model) {
 
   if (xAxisVisible) {
     const y0 = worldToCanvas({ x: 0, y: 0 }).y;
-    for (let x = Math.ceil(xmin); x <= Math.floor(xmax); x++) {
+    const startX = Math.ceil(xmin / stepX) * stepX;
+
+    for (let x = startX; x <= xmax + 1e-9; x += stepX) {
       const p = worldToCanvas({ x, y: 0 });
       ctx.beginPath();
       ctx.moveTo(p.x, y0 - 6);
@@ -363,23 +539,25 @@ export function drawGraph(ctx, viewport, model) {
 
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillText(String(x), p.x, y0 + 8);
+      ctx.fillText(String(Math.round(x * 1000) / 1000), p.x, y0 + 8);
     }
   }
 
   if (yAxisVisible) {
     const x0 = worldToCanvas({ x: 0, y: 0 }).x;
-    for (let y = Math.ceil(ymin); y <= Math.floor(ymax); y++) {
+    const startY = Math.ceil(ymin / stepY) * stepY;
+
+    for (let y = startY; y <= ymax + 1e-9; y += stepY) {
       const p = worldToCanvas({ x: 0, y });
       ctx.beginPath();
       ctx.moveTo(x0 - 6, p.y);
       ctx.lineTo(x0 + 6, p.y);
       ctx.stroke();
 
-      if (y !== 0) {
+      if (Math.abs(y) > 1e-12) {
         ctx.textAlign = "right";
         ctx.textBaseline = "middle";
-        ctx.fillText(String(y), x0 - 10, p.y);
+        ctx.fillText(String(Math.round(y * 1000) / 1000), x0 - 10, p.y);
       }
     }
   }
@@ -395,7 +573,6 @@ export function drawGraph(ctx, viewport, model) {
     const p = worldToCanvas({ x: xmax, y: 0 });
     ctx.fillText("x₁", p.x + 8, p.y + 6);
   }
-
   if (yAxisVisible) {
     const p = worldToCanvas({ x: 0, y: ymax });
     ctx.fillText("x₂", p.x - 10, p.y - 10);
@@ -407,6 +584,7 @@ export function drawGraph(ctx, viewport, model) {
   const segs = model.cons.map((line) => {
     const seg = segPointsInBox(line, box);
     if (!seg) return null;
+
     const a = worldToCanvas(seg[0]);
     const b = worldToCanvas(seg[1]);
 
@@ -426,151 +604,88 @@ export function drawGraph(ctx, viewport, model) {
   model.cons.forEach((c) => drawTicksForbidden(ctx, c, box, scale, worldToCanvas));
 
   /* EQUATIONS */
-  if (isMax) {
-    if (segs[1]) {
-      /* -2x1 + x2 = 1 */
-      drawEqNearLine(
-        ctx,
-        segs[1],
-        worldToCanvas,
-        fmtEqEQ(model.cons[1].A, model.cons[1].B, model.cons[1].C),
-        0.78,
-        -1,
-        -1,
-        18
-      );
+  drawEquationsOnTheirLines(ctx, model, segs, box, worldToCanvas, viewport);
+
+  // ===================== SOLUTION (ONLY IF showSolution) =====================
+  if (showSolution) {
+    if (isMax && hull) drawFeasibleRegionMax(ctx, hull, worldToCanvas);
+
+    const { p, q, kLine } = model.obj;
+    const kNow = kLine + (best.v - kLine) * t;
+
+    // ✅ red line animated
+    const objSeg = segPointsInBox({ A: p, B: q, C: kNow }, box);
+    if (objSeg) {
+      const a = worldToCanvas(objSeg[0]);
+      const b = worldToCanvas(objSeg[1]);
+      ctx.save();
+      ctx.strokeStyle = "#df6b4c";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.restore();
     }
 
-    if (segs[0]) {
-      /* 4x1 - 3x2 = 2 */
-      drawEqNearLine(
-        ctx,
-        segs[0],
-        worldToCanvas,
-        fmtEqEQ(model.cons[0].A, model.cons[0].B, model.cons[0].C),
-        0.82,
-        1,
-        -1,
-        18
-      );
-    }
-
-    if (segs[2]) {
-      /* -6x1 + 14x2 = 35 */
-      drawEqNearLine(
-        ctx,
-        segs[2],
-        worldToCanvas,
-        fmtEqEQ(model.cons[2].A, model.cons[2].B, model.cons[2].C),
-        0.88,
-        1,
-        -1,
-        18
-      );
-    }
-  }
-
-  if (isMin) {
-    drawText(ctx, fmtEqEQ(model.cons[0].A, model.cons[0].B, model.cons[0].C), left - 8, bottom + 32, "15px Times New Roman, serif");
-    drawText(ctx, fmtEqEQ(model.cons[1].A, model.cons[1].B, model.cons[1].C), left - 65, bottom + 150, "15px Times New Roman, serif");
-    drawText(ctx, fmtEqEQ(model.cons[2].A, model.cons[2].B, model.cons[2].C), left + 285, bottom + 165, "15px Times New Roman, serif");
-  }
-
-  /* REGION */
-  if (isMax && hull) drawFeasibleRegionMax(ctx, hull, worldToCanvas);
-
-  /* OBJECTIF */
-  const { p, q, kLine } = model.obj;
-
-  const objBaseSeg = segPointsInBox({ A: p, B: q, C: kLine }, box);
-  if (objBaseSeg) {
-    const a = worldToCanvas(objBaseSeg[0]);
-    const b = worldToCanvas(objBaseSeg[1]);
+    // optimum point + guides + box
+    const cBest = worldToCanvas(best.pt);
     ctx.save();
-    ctx.strokeStyle = "#df6b4c";
-    ctx.lineWidth = 2;
+    ctx.fillStyle = "#ff0000";
     ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+    ctx.arc(cBest.x, cBest.y, 5.5, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
-  }
 
-  const objOptSeg = segPointsInBox({ A: p, B: q, C: best.v }, box);
-  if (objOptSeg) {
-    const a = worldToCanvas(objOptSeg[0]);
-    const b = worldToCanvas(objOptSeg[1]);
     ctx.save();
     ctx.strokeStyle = "#df6b4c";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-    ctx.restore();
-  }
+    ctx.lineWidth = 1.1;
+    ctx.setLineDash([4, 4]);
 
-  /* POINT OPTIMUM */
-  const cBest = worldToCanvas(best.pt);
+    const px = worldToCanvas({ x: best.pt.x, y: ymin });
+    const py = worldToCanvas({ x: xmin, y: best.pt.y });
 
-  ctx.save();
-  ctx.fillStyle = "#ff0000";
-  ctx.beginPath();
-  ctx.arc(cBest.x, cBest.y, 5.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  /* GUIDES */
-  ctx.save();
-  ctx.strokeStyle = "#df6b4c";
-  ctx.lineWidth = 1.1;
-  ctx.setLineDash([4, 4]);
-
-  const px = worldToCanvas({ x: best.pt.x, y: 0 });
-  const py = worldToCanvas({ x: 0, y: best.pt.y });
-
-  ctx.beginPath();
-  ctx.moveTo(cBest.x, cBest.y);
-  ctx.lineTo(px.x, px.y);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(cBest.x, cBest.y);
-  ctx.lineTo(py.x, py.y);
-  ctx.stroke();
-
-  ctx.restore();
-
-  /* FLECHE MAX */
-  if (isMax) {
-    ctx.save();
-    ctx.strokeStyle = "#df6b4c";
-    ctx.fillStyle = "#df6b4c";
-    ctx.lineWidth = 2;
-    const to = { x: cBest.x + 50, y: cBest.y };
     ctx.beginPath();
     ctx.moveTo(cBest.x, cBest.y);
-    ctx.lineTo(to.x, to.y);
+    ctx.lineTo(px.x, px.y);
     ctx.stroke();
-    arrowHead(ctx, to.x, to.y, 0, 8);
-    ctx.restore();
-  }
 
-  /* BOITE SOLUTION */
-  if (isMax) {
-    drawSolutionBox(
-      ctx,
-      [`x₁ = ${fmtSmart(best.pt.x)}`, `x₂ = ${fmtSmart(best.pt.y)}`],
-      cBest.x + 110,
-      cBest.y - 16
-    );
-  } else {
-    drawSolutionBox(
-      ctx,
-      [`x₁ = ${fmtSmart(best.pt.x)}  et  x₂ = ${fmtSmart(best.pt.y)}`],
-      cBest.x + 80,
-      cBest.y - 10
-    );
+    ctx.beginPath();
+    ctx.moveTo(cBest.x, cBest.y);
+    ctx.lineTo(py.x, py.y);
+    ctx.stroke();
+
+    ctx.restore();
+
+    if (isMax) {
+      ctx.save();
+      ctx.strokeStyle = "#df6b4c";
+      ctx.fillStyle = "#df6b4c";
+      ctx.lineWidth = 2;
+      const to = { x: cBest.x + 50, y: cBest.y };
+      ctx.beginPath();
+      ctx.moveTo(cBest.x, cBest.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+      arrowHead(ctx, to.x, to.y, 0, 8);
+      ctx.restore();
+    }
+
+    if (isMax) {
+      drawSolutionBox(
+        ctx,
+        [`x₁ = ${fmtSmart(best.pt.x)}`, `x₂ = ${fmtSmart(best.pt.y)}`],
+        cBest.x + 110,
+        cBest.y - 16
+      );
+    } else {
+      drawSolutionBox(
+        ctx,
+        [`x₁ = ${fmtSmart(best.pt.x)}  et  x₂ = ${fmtSmart(best.pt.y)}`],
+        cBest.x + 80,
+        cBest.y - 10
+      );
+    }
   }
 
   return { best };

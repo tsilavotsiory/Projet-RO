@@ -1,3 +1,4 @@
+// D:\projet-ro\src\components\Table\Table.js
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { parseValue, fmtSmart, fmtEqEQ } from "../../utils/math";
 import { computeOther } from "./tableUtils";
@@ -8,13 +9,7 @@ const EDITOR_W = 270;
 const EDITOR_H = 155;
 const MARGIN = 10;
 
-export default function Table({
-  linesForTable,
-  cellData,
-  setCellData,
-  setStatus,
-  onCellDataChange, // optionnel: callback vers la page
-}) {
+export default function Table({ linesForTable, cellData, setCellData, setStatus, onCellDataChange }) {
   const wrapRef = useRef(null);
   const editorRef = useRef(null);
 
@@ -50,9 +45,61 @@ export default function Table({
     return Math.max(a, Math.min(b, n));
   }
 
+  function isVertical(line) {
+    const eps = 1e-12;
+    return Math.abs(line.B) < eps && Math.abs(line.A) >= eps;
+  }
+  function isHorizontal(line) {
+    const eps = 1e-12;
+    return Math.abs(line.A) < eps && Math.abs(line.B) >= eps;
+  }
+
+  // ✅ NOUVELLE règle demandée:
+  // - x1 = const => on met x2 = 0 (toujours)
+  // - x2 = const => on met x1 = 0 (toujours)
+  function autoPointForSpecialLine(line) {
+    if (isVertical(line)) {
+      const x = line.C / line.A;
+      return { x, y: 0 };
+    }
+    if (isHorizontal(line)) {
+      const y = line.C / line.B;
+      return { x: 0, y };
+    }
+    return null;
+  }
+
+  function saveCellPoint(r, c, pt, raw = "auto", givenVar = "auto") {
+    const display = `(${fmtSmart(pt.x)}, ${fmtSmart(pt.y)})`;
+
+    const next = {
+      ...cellData,
+      [keyOf(r, c)]: {
+        raw,
+        givenVar,
+        display,
+        pt: { x: pt.x, y: pt.y },
+        meta: { r, c },
+      },
+    };
+
+    setCellData(next);
+    onCellDataChange?.(next);
+  }
+
   function openEditor(td) {
     const r = Number(td.dataset.r);
     const c = Number(td.dataset.c);
+
+    const line = linesForTable[r];
+
+    // ✅ si verticale/horizontale => on met directement (x,0) ou (0,y)
+    const auto = autoPointForSpecialLine(line);
+    if (auto) {
+      saveCellPoint(r, c, auto, "auto", "auto");
+      setStatus?.("Point ajouté automatiquement (droite x₁=const ou x₂=const).");
+      return;
+    }
 
     const defaultVar = c === 1 ? "x2" : "x1";
     const saved = cellData[keyOf(r, c)];
@@ -87,7 +134,6 @@ export default function Table({
     const raw = editor.raw;
     const v = parseValue(raw);
 
-    // vide => efface
     if (v === null) {
       const copy = { ...cellData };
       delete copy[keyOf(r, c)];
@@ -114,14 +160,13 @@ export default function Table({
           raw,
           givenVar: editor.givenVar,
           display,
-          pt: { x: pt.x1, y: pt.x2 }, // IMPORTANT: on conserve le point pour le graphe
+          pt: { x: pt.x1, y: pt.x2 },
           meta: { r, c },
         },
       };
 
       setCellData(next);
       onCellDataChange?.(next);
-
       setEditor((ed) => ({ ...ed, open: false }));
     } catch (e) {
       setStatus("Erreur: " + e.message);
@@ -133,15 +178,11 @@ export default function Table({
       <table className="plTable">
         <thead>
           <tr>
-            <th style={activeC === -1 ? undefined : undefined}>Droites</th>
+            <th>Droites</th>
             {COLS.map((h, idx) => (
               <th
                 key={h}
-                style={
-                  idx === activeC
-                    ? { background: "rgba(37,99,235,.10)", color: "#1d4ed8" }
-                    : undefined
-                }
+                style={idx === activeC ? { background: "rgba(37,99,235,.10)", color: "#1d4ed8" } : undefined}
               >
                 {h}
               </th>
@@ -156,11 +197,7 @@ export default function Table({
               <tr key={r} style={rowActive ? { background: "rgba(37,99,235,.06)" } : undefined}>
                 <td
                   className="eqCell"
-                  style={
-                    rowActive
-                      ? { outline: "2px solid rgba(37,99,235,.45)", outlineOffset: "-2px" }
-                      : undefined
-                  }
+                  style={rowActive ? { outline: "2px solid rgba(37,99,235,.45)", outlineOffset: "-2px" } : undefined}
                 >
                   {fmtEqEQ(L.A, L.B, L.C)}
                 </td>
@@ -178,10 +215,9 @@ export default function Table({
                       data-c={c}
                       onClick={(e) => openEditor(e.currentTarget)}
                       style={
-                        colActive && !isActive
-                          ? { outline: "2px solid rgba(37,99,235,.25)", outlineOffset: "-2px" }
-                          : undefined
+                        colActive && !isActive ? { outline: "2px solid rgba(37,99,235,.25)", outlineOffset: "-2px" } : undefined
                       }
+                      title={isVertical(L) || isHorizontal(L) ? "Clic = point auto (x₂=0 ou x₁=0)" : "Clique pour entrer une valeur"}
                     >
                       {cellData[k]?.display || ""}
                     </td>
@@ -209,7 +245,6 @@ export default function Table({
             }
           }}
         >
-          {/* Affichage clair cellule */}
           <div style={{ fontWeight: 950, fontSize: 13, marginBottom: 8, color: "#0f172a" }}>
             Ligne {editor.r + 1} — Colonne {COLS[editor.c]}
           </div>
@@ -232,8 +267,6 @@ export default function Table({
               autoFocus
             />
           </div>
-
-          {/* supprimé: la phrase “Entrée/OK …” */}
 
           <div className="editorActions">
             <button className="btn btnPrimary" onClick={commit}>

@@ -1,19 +1,34 @@
-import { parseValue } from "../../utils/math";
+import { parseValue, parseCoeff } from "../../utils/math";
 
 export function buildMaxModel({ consInputs, objInputs }) {
-  const sense = "<=";
-  const m = 3;
-
   const cons = [];
-  for (let i = 0; i < m; i++) {
-    const A = parseValue(consInputs[i]?.A);
-    const B = parseValue(consInputs[i]?.B);
-    const C = parseValue(consInputs[i]?.C);
 
-    if (A == null || B == null || C == null) throw new Error("Saisis A, B, C pour les 3 contraintes.");
-    if (!isFinite(A) || !isFinite(B) || !isFinite(C)) throw new Error("Coefficients invalides (ex: 3/0).");
+  for (let i = 0; i < consInputs.length; i++) {
+    const row = consInputs[i] || {};
+    const rawA = String(row.A ?? "").trim();
+    const rawB = String(row.B ?? "").trim();
+    const rawC = String(row.C ?? "").trim();
+
+    const allEmpty = rawA === "" && rawB === "" && rawC === "";
+    if (allEmpty) continue;
+
+    const A = parseCoeff(row.A); // "" => 0
+    const B = parseCoeff(row.B); // "" => 0
+    const C = parseValue(row.C); // C obligatoire
+    const sense = row.sense === ">=" ? ">=" : "<=";
+
+    if (C == null) throw new Error(`Contrainte ${i + 1}: C est obligatoire.`);
+
+    if (!isFinite(A) || !isFinite(B) || !isFinite(C)) throw new Error("Coefficients invalides.");
+
+    if (Math.abs(A) < 1e-12 && Math.abs(B) < 1e-12) {
+      throw new Error(`Contrainte ${i + 1}: A et B ne peuvent pas être tous les deux nuls.`);
+    }
+
     cons.push({ A, B, C, sense });
   }
+
+  if (cons.length === 0) throw new Error("Aucune contrainte valide.");
 
   const p = parseValue(objInputs.p);
   const q = parseValue(objInputs.q);
@@ -26,13 +41,11 @@ export function buildMaxModel({ consInputs, objInputs }) {
     mode: "max",
     cons,
     obj: { p, q, kLine },
-    /* plus proche du PDF exemple 1 */
-    viewBox: { xmin: -2, xmax: 7, ymin: -1.5, ymax: 7, pad: 48 },
+    // ✅ on peut garder un viewBox petit, car on va auto-cadrer dans le graphe
+    viewBox: { xmin: -2, xmax: 7, ymin: -2, ymax: 7, pad: 48 },
   };
 
-  const linesForTable = cons
-    .map((c) => ({ A: c.A, B: c.B, C: c.C }))
-    .concat([{ A: p, B: q, C: kLine }]);
+  const linesForTable = cons.map((c) => ({ A: c.A, B: c.B, C: c.C })).concat([{ A: p, B: q, C: kLine }]);
 
   return { model, linesForTable };
 }
