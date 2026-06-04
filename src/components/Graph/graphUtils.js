@@ -119,7 +119,9 @@ function segPointsInBox(line, box) {
   if (u.length < 2) return null;
 
   if (u.length > 2) {
-    let bi = 0, bj = 1, bd = -1;
+    let bi = 0,
+      bj = 1,
+      bd = -1;
     for (let i = 0; i < u.length; i++) {
       for (let j = i + 1; j < u.length; j++) {
         const dx = u[i].x - u[j].x;
@@ -183,13 +185,22 @@ function computeAutoViewBox(model, solved) {
 
   if (pts.length === 0) return { xmin: -2, xmax: 7, ymin: -2, ymax: 7 };
 
-  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+  let xmin = Infinity,
+    xmax = -Infinity,
+    ymin = Infinity,
+    ymax = -Infinity;
   for (const p of pts) {
     xmin = Math.min(xmin, p.x);
     xmax = Math.max(xmax, p.x);
     ymin = Math.min(ymin, p.y);
     ymax = Math.max(ymax, p.y);
   }
+
+  // ✅ style PDF: inclure (0,0) si possible pour avoir les axes visibles
+  xmin = Math.min(xmin, 0);
+  xmax = Math.max(xmax, 0);
+  ymin = Math.min(ymin, 0);
+  ymax = Math.max(ymax, 0);
 
   const dx = Math.max(1, xmax - xmin);
   const dy = Math.max(1, ymax - ymin);
@@ -198,8 +209,14 @@ function computeAutoViewBox(model, solved) {
   ymin -= 0.12 * dy;
   ymax += 0.12 * dy;
 
-  if (Math.abs(xmax - xmin) < 1e-9) { xmin -= 1; xmax += 1; }
-  if (Math.abs(ymax - ymin) < 1e-9) { ymin -= 1; ymax += 1; }
+  if (Math.abs(xmax - xmin) < 1e-9) {
+    xmin -= 1;
+    xmax += 1;
+  }
+  if (Math.abs(ymax - ymin) < 1e-9) {
+    ymin -= 1;
+    ymax += 1;
+  }
 
   return { xmin, xmax, ymin, ymax };
 }
@@ -266,46 +283,189 @@ function drawTicksForbidden(ctx, con, box, scale, worldToCanvas) {
   ctx.restore();
 }
 
-/* ==================== EQUATIONS (ANTI COLLISION) ==================== */
-function pickTopPointOnSeg(seg, box) {
-  const p0 = seg[0], p1 = seg[1];
-  const topEnd = p0.y >= p1.y ? p0 : p1;
-  const botEnd = p0.y >= p1.y ? p1 : p0;
+/* ==================== EQUATIONS OUTSIDE (RETURN RECTS) ==================== */
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+function collide(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function rectForText(x, y, w, h, align) {
+  const rx = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
+  return { x: rx, y: y - h / 2, w, h };
+}
 
-  if (Math.abs(topEnd.y - box.ymax) < 1e-9) {
-    const t = 0.12;
-    return { wp: { x: topEnd.x + (botEnd.x - topEnd.x) * t, y: topEnd.y + (botEnd.y - topEnd.y) * t } };
+function pickEdgeAndAnchor(c0, c1, plotRect) {
+  const eps = 2.0;
+  const edges = [
+    { name: "top", dist: (p) => Math.abs(p.y - plotRect.y) },
+    { name: "right", dist: (p) => Math.abs(p.x - (plotRect.x + plotRect.w)) },
+    { name: "bottom", dist: (p) => Math.abs(p.y - (plotRect.y + plotRect.h)) },
+    { name: "left", dist: (p) => Math.abs(p.x - plotRect.x) },
+  ];
+  const pts = [c0, c1];
+
+  for (const e of edges) {
+    for (const p of pts) {
+      if (e.dist(p) <= eps) return { edge: e.name, anchor: p };
+    }
   }
 
-  const targetY = box.ymax - 0.12 * (box.ymax - box.ymin);
-  const dy = p1.y - p0.y;
-  let t = 0.7;
-  if (Math.abs(dy) > 1e-12) t = (targetY - p0.y) / dy;
-
-  t = Math.max(0.08, Math.min(0.92, t));
-  return { wp: { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t } };
+  let best = { edge: "top", anchor: c0, d: Infinity };
+  for (const p of pts) {
+    for (const e of edges) {
+      const d = e.dist(p);
+      if (d < best.d) best = { edge: e.name, anchor: p, d };
+    }
+  }
+  return { edge: best.edge, anchor: best.anchor };
 }
 
-function upNormalCanvas(worldToCanvas, wp, A, B) {
-  const nLen = Math.hypot(A, B) || 1;
-  const nxW = A / nLen;
-  const nyW = B / nLen;
-  const nv1 = worldNormalToCanvas(worldToCanvas, wp, nxW, nyW);
-  const nv2 = { x: -nv1.x, y: -nv1.y };
-  return nv1.y < nv2.y ? nv1 : nv2;
+function packEdgeItems(items, edge, plotRect, viewport) {
+  const OUT = 34;
+  const GAP = 10;
+  const ROW_GAP = 22;
+  const COL_GAP = 22;
+  const MAX_LANES = 3;
+
+  const minX = plotRect.x + 6;
+  const maxX = plotRect.x + plotRect.w - 6;
+  const minY = plotRect.y + 6;
+  const maxY = plotRect.y + plotRect.h - 6;
+
+  if (edge === "top" || edge === "bottom") items.sort((a, b) => a.anchorX - b.anchorX);
+  else items.sort((a, b) => a.anchorY - b.anchorY);
+
+  for (let lane = 0; lane < MAX_LANES; lane++) {
+    if (edge === "top" || edge === "bottom") {
+      const yBase = edge === "top" ? plotRect.y - OUT - lane * ROW_GAP : plotRect.y + plotRect.h + OUT + lane * ROW_GAP;
+      const yInside = edge === "top" ? plotRect.y + 12 + lane * ROW_GAP : plotRect.y + plotRect.h - 12 - lane * ROW_GAP;
+
+      const y =
+        yBase - 9 < 6 || yBase + 9 > viewport.height - 6
+          ? clamp(yInside, 10, viewport.height - 10)
+          : clamp(yBase, 10, viewport.height - 10);
+
+      let cursor = minX;
+
+      for (const it of items) {
+        if (it.placed) continue;
+        const half = it.w / 2;
+
+        let x = clamp(it.anchorX, minX + half, maxX - half);
+        const minAllowed = cursor + half;
+
+        if (x < minAllowed) x = minAllowed;
+        if (x + half > maxX) continue;
+
+        it.x = x;
+        it.y = y;
+        it.align = "center";
+        it.placed = true;
+
+        cursor = x + half + GAP;
+      }
+    } else {
+      const outside = edge === "left" ? plotRect.x - OUT - lane * COL_GAP : plotRect.x + plotRect.w + OUT + lane * COL_GAP;
+      const inside = edge === "left" ? plotRect.x + 10 + lane * COL_GAP : plotRect.x + plotRect.w - 10 - lane * COL_GAP;
+
+      let x = outside;
+      let align = edge === "left" ? "right" : "left";
+
+      if (edge === "left") {
+        if (outside - 40 < 6) {
+          x = inside;
+          align = "left";
+        }
+      } else {
+        if (outside + 40 > viewport.width - 6) {
+          x = inside;
+          align = "right";
+        }
+      }
+
+      x = clamp(x, 10, viewport.width - 10);
+
+      let cursor = minY;
+
+      for (const it of items) {
+        if (it.placed) continue;
+        const half = it.h / 2;
+
+        let y = clamp(it.anchorY, minY + half, maxY - half);
+        const minAllowed = cursor + half;
+
+        if (y < minAllowed) y = minAllowed;
+        if (y + half > maxY) continue;
+
+        it.x = x;
+        it.y = y;
+        it.align = align;
+        it.placed = true;
+
+        cursor = y + half + GAP;
+      }
+    }
+  }
 }
 
-function drawEquationsOnTheirLines(ctx, model, segs, box, worldToCanvas, viewport) {
-  const font = "16px Times New Roman, serif";
+function resolveGlobalCollisions(items, viewport, plotRect) {
   const placed = [];
-  const collide = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+  const safeClampRect = (r) => {
+    r.x = clamp(r.x, 6, viewport.width - 6 - r.w);
+    r.y = clamp(r.y, 6, viewport.height - 6 - r.h);
+  };
+
+  const edgeOrder = { top: 1, right: 2, bottom: 3, left: 4 };
+  const sorted = items
+    .filter((x) => x.placed)
+    .slice()
+    .sort((a, b) => edgeOrder[a.edge] - edgeOrder[b.edge] || a.idx - b.idx);
+
+  for (const it of sorted) {
+    let tries = 0;
+    const step = 16;
+
+    while (tries < 50) {
+      const r = rectForText(it.x, it.y, it.w, it.h, it.align);
+      safeClampRect(r);
+
+      const coll = placed.some((p) => collide(r, p));
+      if (!coll) {
+        placed.push(r);
+        it.finalRect = r;
+        break;
+      }
+
+      if (it.edge === "top" || it.edge === "bottom") {
+        it.x += (tries % 2 === 0 ? 1 : -1) * step * (1 + Math.floor(tries / 2));
+        it.x = clamp(it.x, plotRect.x + it.w / 2 + 6, plotRect.x + plotRect.w - it.w / 2 - 6);
+      } else {
+        it.y += (tries % 2 === 0 ? 1 : -1) * step * (1 + Math.floor(tries / 2));
+        it.y = clamp(it.y, plotRect.y + it.h / 2 + 6, plotRect.y + plotRect.h - it.h / 2 - 6);
+      }
+      tries++;
+    }
+
+    if (!it.finalRect) {
+      const r = rectForText(it.x, it.y, it.w, it.h, it.align);
+      safeClampRect(r);
+      it.finalRect = r;
+      placed.push(r);
+    }
+  }
+}
+
+function drawEquationsOutsidePlot(ctx, model, segs, worldToCanvas, viewport, plotRect) {
+  const font = "16px Times New Roman, serif";
 
   ctx.save();
   ctx.font = font;
   ctx.fillStyle = "#111";
-  ctx.textAlign = "left";
   ctx.textBaseline = "middle";
 
+  const items = [];
   for (let i = 0; i < model.cons.length; i++) {
     const seg = segs[i];
     if (!seg) continue;
@@ -315,51 +475,69 @@ function drawEquationsOnTheirLines(ctx, model, segs, box, worldToCanvas, viewpor
     const w = ctx.measureText(txt).width;
     const h = 18;
 
-    let { wp } = pickTopPointOnSeg(seg, box);
+    const c0 = worldToCanvas(seg[0]);
+    const c1 = worldToCanvas(seg[1]);
 
-    const dx = seg[1].x - seg[0].x;
-    const dy = seg[1].y - seg[0].y;
-    const L = Math.hypot(dx, dy) || 1;
-    const ux = dx / L;
-    const uy = dy / L;
+    const { edge, anchor } = pickEdgeAndAnchor(c0, c1, plotRect);
 
-    const upNv = upNormalCanvas(worldToCanvas, wp, con.A, con.B);
-    const offsetPx = 16;
+    items.push({
+      idx: i,
+      edge,
+      txt,
+      w,
+      h,
+      anchorX: anchor.x,
+      anchorY: anchor.y,
+      placed: false,
+      x: 0,
+      y: 0,
+      align: "center",
+      finalRect: null,
+    });
+  }
 
-    let x = 0, y = 0, ok = false;
+  const top = items.filter((x) => x.edge === "top");
+  const right = items.filter((x) => x.edge === "right");
+  const bottom = items.filter((x) => x.edge === "bottom");
+  const left = items.filter((x) => x.edge === "left");
 
-    for (let attempt = 0; attempt < 24; attempt++) {
-      const slide = (attempt * 0.06) * L;
-      const slideDir = attempt % 2 === 0 ? 1 : -1;
+  packEdgeItems(top, "top", plotRect, viewport);
+  packEdgeItems(right, "right", plotRect, viewport);
+  packEdgeItems(bottom, "bottom", plotRect, viewport);
+  packEdgeItems(left, "left", plotRect, viewport);
 
-      const wpTry = { x: wp.x + ux * slide * slideDir, y: wp.y + uy * slide * slideDir };
-      const cp = worldToCanvas(wpTry);
+  for (const it of items) {
+    if (it.placed) continue;
+    it.edge = "top";
+    it.align = "center";
+    it.x = clamp(it.anchorX, plotRect.x + it.w / 2 + 6, plotRect.x + plotRect.w - it.w / 2 - 6);
+    it.y = clamp(plotRect.y + 14, 10, viewport.height - 10);
+    it.placed = true;
+  }
 
-      const extra = attempt >= 10 ? 14 : 0;
-      x = cp.x + upNv.x * (offsetPx + extra);
-      y = cp.y + upNv.y * (offsetPx + extra);
+  resolveGlobalCollisions(items, viewport, plotRect);
 
-      x = Math.max(6, Math.min(viewport.width - w - 6, x));
-      y = Math.max(10, Math.min(viewport.height - 10, y));
-
-      const rect = { x, y: y - h / 2, w, h };
-      if (!placed.some((p) => collide(rect, p))) {
-        placed.push(rect);
-        ok = true;
-        break;
-      }
-    }
-
-    if (!ok) placed.push({ x, y: y - h / 2, w, h });
-    ctx.fillText(txt, x, y);
+  for (const it of items) {
+    ctx.textAlign = it.align;
+    const x =
+      it.align === "center"
+        ? it.finalRect.x + it.finalRect.w / 2
+        : it.align === "right"
+          ? it.finalRect.x + it.finalRect.w
+          : it.finalRect.x;
+    const y = it.finalRect.y + it.finalRect.h / 2;
+    ctx.fillText(it.txt, x, y);
   }
 
   ctx.restore();
+  return items.map((it) => it.finalRect).filter(Boolean);
 }
 
 /* ==================== REGION (S AU CENTRE) ==================== */
 function polygonCentroid(poly) {
-  let A = 0, cx = 0, cy = 0;
+  let A = 0,
+    cx = 0,
+    cy = 0;
   for (let i = 0; i < poly.length; i++) {
     const p = poly[i];
     const q = poly[(i + 1) % poly.length];
@@ -412,6 +590,86 @@ function drawFeasibleRegionMax(ctx, poly, worldToCanvas) {
   ctx.restore();
 }
 
+/* ==================== SOLUTION BOX (AVOID GRAPH + EQUATIONS) ==================== */
+function measureSolutionBox(ctx, lines) {
+  ctx.save();
+  ctx.font = "700 18px Times New Roman, serif";
+  const padX = 16;
+  const padY = 12;
+  const lineH = 26;
+  const maxW = Math.max(...lines.map((t) => ctx.measureText(t).width));
+  const boxW = maxW + padX * 2;
+  const boxH = lines.length * lineH + padY * 2;
+  ctx.restore();
+  return { boxW, boxH };
+}
+
+function rectIntersectArea(a, b) {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w);
+  const y1 = Math.min(a.y + a.h, b.y + b.h);
+  if (x1 <= x0 || y1 <= y0) return 0;
+  return (x1 - x0) * (y1 - y0);
+}
+
+function inflateRect(r, pad) {
+  return { x: r.x - pad, y: r.y - pad, w: r.w + 2 * pad, h: r.h + 2 * pad };
+}
+
+function pickSolutionBoxPos(viewport, plotRect, cBest, boxW, boxH, avoidRects = []) {
+  const margin = 18;
+  const padAvoid = 10;
+
+  const inflatedAvoid = avoidRects.map((r) => inflateRect(r, padAvoid));
+  const plot = inflateRect({ x: plotRect.x, y: plotRect.y, w: plotRect.w, h: plotRect.h }, 8);
+
+  const candidates = [
+    // priorité: en dehors du graphe à droite
+    { x: plotRect.x + plotRect.w + margin, y: cBest.y - boxH / 2 },
+    { x: plotRect.x + plotRect.w + margin, y: plotRect.y + 10 },
+    { x: plotRect.x + plotRect.w + margin, y: plotRect.y + plotRect.h - boxH - 10 },
+
+    // à gauche
+    { x: plotRect.x - margin - boxW, y: cBest.y - boxH / 2 },
+    { x: plotRect.x - margin - boxW, y: plotRect.y + 10 },
+    { x: plotRect.x - margin - boxW, y: plotRect.y + plotRect.h - boxH - 10 },
+
+    // au-dessus / en dessous (centré)
+    { x: plotRect.x + plotRect.w / 2 - boxW / 2, y: plotRect.y - margin - boxH },
+    { x: plotRect.x + plotRect.w / 2 - boxW / 2, y: plotRect.y + plotRect.h + margin },
+
+    // coins canvas
+    { x: viewport.width - boxW - 10, y: 10 },
+    { x: 10, y: 10 },
+    { x: viewport.width - boxW - 10, y: viewport.height - boxH - 10 },
+    { x: 10, y: viewport.height - boxH - 10 },
+  ];
+
+  let best = null;
+
+  for (const c of candidates) {
+    const x = clamp(c.x, 8, viewport.width - 8 - boxW);
+    const y = clamp(c.y, 8, viewport.height - 8 - boxH);
+    const r = { x, y, w: boxW, h: boxH };
+
+    const overlapPlot = rectIntersectArea(r, plot);
+    let overlapAvoid = 0;
+    for (const a of inflatedAvoid) overlapAvoid += rectIntersectArea(r, a);
+
+    const dx = x + boxW / 2 - cBest.x;
+    const dy = y + boxH / 2 - cBest.y;
+    const dist = Math.hypot(dx, dy);
+
+    // score: éviter équations + graphe d'abord, puis distance
+    const score = overlapAvoid * 50 + overlapPlot * 40 + dist * 0.2;
+
+    if (!best || score < best.score) best = { r, score, overlapAvoid, overlapPlot };
+  }
+
+  return best?.r || { x: 10, y: 10, w: boxW, h: boxH };
+}
+
 function drawSolutionBox(ctx, lines, x, y) {
   ctx.save();
   ctx.font = "700 18px Times New Roman, serif";
@@ -445,16 +703,34 @@ export function drawGraph(ctx, viewport, model) {
   const showSolution = !!model.showSolution;
   const t = Math.max(0, Math.min(1, Number(model.animT ?? (showSolution ? 1 : 0))));
 
-  // AutoViewBox
-  const baseBox = model.autoViewBox
-    ? computeAutoViewBox(model, solved)
-    : (model.viewBox || { xmin: -2, xmax: 7, ymin: -2, ymax: 7 });
+  // ✅ baseBox en let (on pourra forcer style PDF)
+  let baseBox = model.autoViewBox ? computeAutoViewBox(model, solved) : model.viewBox || { xmin: -2, xmax: 7, ymin: -2, ymax: 7 };
+
+  // ✅ style PDF : si "petit repère", on force [-2..7] et graduations entières
+  const PDF_BOX = { xmin: -2, xmax: 7, ymin: -2, ymax: 7 };
+  const smallRange = baseBox.xmax - baseBox.xmin <= 12 && baseBox.ymax - baseBox.ymin <= 12;
+
+  const fitsPdf = Array.isArray(solved?.feasVerts)
+    ? solved.feasVerts.every(
+        (p) =>
+          p.x >= PDF_BOX.xmin - 1e-9 &&
+          p.x <= PDF_BOX.xmax + 1e-9 &&
+          p.y >= PDF_BOX.ymin - 1e-9 &&
+          p.y <= PDF_BOX.ymax + 1e-9
+      )
+    : false;
+
+  if (smallRange && fitsPdf) baseBox = PDF_BOX;
 
   const userStepX = parseTickStep(model.scaleCm?.xUnitCm);
   const userStepY = parseTickStep(model.scaleCm?.yUnitCm);
 
-  const fallbackStepX = niceStep(baseBox.xmax - baseBox.xmin);
-  const fallbackStepY = niceStep(baseBox.ymax - baseBox.ymin);
+  const rangeX = baseBox.xmax - baseBox.xmin;
+  const rangeY = baseBox.ymax - baseBox.ymin;
+
+  // ✅ PDF-like: repère petit => pas=1
+  const fallbackStepX = rangeX <= 12 ? 1 : niceStep(rangeX);
+  const fallbackStepY = rangeY <= 12 ? 1 : niceStep(rangeY);
 
   const stepX = userStepX || fallbackStepX;
   const stepY = userStepY || fallbackStepY;
@@ -465,19 +741,28 @@ export function drawGraph(ctx, viewport, model) {
   const W = viewport.width;
   const H = viewport.height;
 
-  const graphW = isMax ? 430 : 380;
-  const graphH = isMax ? 420 : 380;
-
   const xr = xmax - xmin;
   const yr = ymax - ymin;
 
-  const scale = Math.min(graphW / xr, graphH / yr);
+  // ✅ Layout "PDF-like" : on utilise le canvas (pas 430x420 au centre)
+  const PAD_L = 85; // place pour labels/ticks Y
+  const PAD_B = 85; // place pour labels/ticks X
+  const PAD_T = 55; // place en haut pour équations
+  const PAD_R = showSolution ? 280 : 120; // place à droite (solution box)
+
+  const availW = Math.max(240, W - PAD_L - PAD_R);
+  const availH = Math.max(240, H - PAD_T - PAD_B);
+
+  const scale = Math.min(availW / xr, availH / yr);
 
   const plotW = xr * scale;
   const plotH = yr * scale;
 
-  const left = (W - plotW) / 2;
-  const bottom = (H - plotH) / 2;
+  const left = PAD_L + (availW - plotW) / 2;
+  const bottom = PAD_B + (availH - plotH) / 2;
+
+  const plotTop = H - (bottom + plotH);
+  const plotRect = { x: left, y: plotTop, w: plotW, h: plotH };
 
   const worldToCanvas = (p) => ({
     x: left + (p.x - xmin) * scale,
@@ -539,7 +824,7 @@ export function drawGraph(ctx, viewport, model) {
 
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillText(String(Math.round(x * 1000) / 1000), p.x, y0 + 8);
+      ctx.fillText(fmtSmart(x), p.x, y0 + 8);
     }
   }
 
@@ -557,7 +842,7 @@ export function drawGraph(ctx, viewport, model) {
       if (Math.abs(y) > 1e-12) {
         ctx.textAlign = "right";
         ctx.textBaseline = "middle";
-        ctx.fillText(String(Math.round(y * 1000) / 1000), x0 - 10, p.y);
+        ctx.fillText(fmtSmart(y), x0 - 10, p.y);
       }
     }
   }
@@ -603,17 +888,17 @@ export function drawGraph(ctx, viewport, model) {
   /* HACHURES */
   model.cons.forEach((c) => drawTicksForbidden(ctx, c, box, scale, worldToCanvas));
 
-  /* EQUATIONS */
-  drawEquationsOnTheirLines(ctx, model, segs, box, worldToCanvas, viewport);
+  /* équations + rects */
+  const labelRects = drawEquationsOutsidePlot(ctx, model, segs, worldToCanvas, viewport, plotRect);
 
-  // ===================== SOLUTION (ONLY IF showSolution) =====================
+  // ===================== SOLUTION =====================
   if (showSolution) {
     if (isMax && hull) drawFeasibleRegionMax(ctx, hull, worldToCanvas);
 
     const { p, q, kLine } = model.obj;
     const kNow = kLine + (best.v - kLine) * t;
 
-    // ✅ red line animated
+    // red line animated
     const objSeg = segPointsInBox({ A: p, B: q, C: kNow }, box);
     if (objSeg) {
       const a = worldToCanvas(objSeg[0]);
@@ -628,7 +913,7 @@ export function drawGraph(ctx, viewport, model) {
       ctx.restore();
     }
 
-    // optimum point + guides + box
+    // optimum point + guides
     const cBest = worldToCanvas(best.pt);
     ctx.save();
     ctx.fillStyle = "#ff0000";
@@ -671,21 +956,13 @@ export function drawGraph(ctx, viewport, model) {
       ctx.restore();
     }
 
-    if (isMax) {
-      drawSolutionBox(
-        ctx,
-        [`x₁ = ${fmtSmart(best.pt.x)}`, `x₂ = ${fmtSmart(best.pt.y)}`],
-        cBest.x + 110,
-        cBest.y - 16
-      );
-    } else {
-      drawSolutionBox(
-        ctx,
-        [`x₁ = ${fmtSmart(best.pt.x)}  et  x₂ = ${fmtSmart(best.pt.y)}`],
-        cBest.x + 80,
-        cBest.y - 10
-      );
-    }
+    const lines = isMax
+      ? [`x₁ = ${fmtSmart(best.pt.x)}`, `x₂ = ${fmtSmart(best.pt.y)}`]
+      : [`x₁ = ${fmtSmart(best.pt.x)}  et  x₂ = ${fmtSmart(best.pt.y)}`];
+
+    const { boxW, boxH } = measureSolutionBox(ctx, lines);
+    const r = pickSolutionBoxPos(viewport, plotRect, cBest, boxW, boxH, labelRects);
+    drawSolutionBox(ctx, lines, r.x, r.y);
   }
 
   return { best };

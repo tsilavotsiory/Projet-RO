@@ -1,3 +1,4 @@
+// D:\projet-ro\src\pages\max\MaxLogic.js
 import { parseValue, parseCoeff } from "../../utils/math";
 
 export function buildMaxModel({ consInputs, objInputs }) {
@@ -14,13 +15,11 @@ export function buildMaxModel({ consInputs, objInputs }) {
 
     const A = parseCoeff(row.A); // "" => 0
     const B = parseCoeff(row.B); // "" => 0
-    const C = parseValue(row.C); // C obligatoire
+    const C = parseValue(row.C); // C obligatoire si ligne utilisée
     const sense = row.sense === ">=" ? ">=" : "<=";
 
     if (C == null) throw new Error(`Contrainte ${i + 1}: C est obligatoire.`);
-
     if (!isFinite(A) || !isFinite(B) || !isFinite(C)) throw new Error("Coefficients invalides.");
-
     if (Math.abs(A) < 1e-12 && Math.abs(B) < 1e-12) {
       throw new Error(`Contrainte ${i + 1}: A et B ne peuvent pas être tous les deux nuls.`);
     }
@@ -35,17 +34,15 @@ export function buildMaxModel({ consInputs, objInputs }) {
   if (p == null || q == null) throw new Error("Saisis p et q.");
   if (!isFinite(p) || !isFinite(q)) throw new Error("Objectif invalide.");
 
+  // ✅ on n'a plus de champ "k" => on démarre l'animation à kLine = 0
   const kLine = 0;
 
   const model = {
     mode: "max",
     cons,
     obj: { p, q, kLine },
-    // ✅ on peut garder un viewBox petit, car on va auto-cadrer dans le graphe
     viewBox: { xmin: -2, xmax: 7, ymin: -2, ymax: 7, pad: 48 },
   };
 
-  const linesForTable = cons.map((c) => ({ A: c.A, B: c.B, C: c.C })).concat([{ A: p, B: q, C: kLine }]);
-
-  return { model, linesForTable };
+  return { model };
 }

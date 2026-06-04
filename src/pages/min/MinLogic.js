@@ -8,16 +8,14 @@ export function buildMinModel({ consInputs, objInputs, kObjInput }) {
   for (let i = 0; i < consInputs.length; i++) {
     const row = consInputs[i] || {};
 
-    // ✅ A/B : vide => 0
     const A = parseCoeff(row.A);
     const B = parseCoeff(row.B);
-
-    // ✅ C : obligatoire si la contrainte est utilisée
     const C = parseValue(row.C);
 
-    const allEmpty = (row.A ?? "").toString().trim() === "" &&
-                     (row.B ?? "").toString().trim() === "" &&
-                     (row.C ?? "").toString().trim() === "";
+    const allEmpty =
+      (row.A ?? "").toString().trim() === "" &&
+      (row.B ?? "").toString().trim() === "" &&
+      (row.C ?? "").toString().trim() === "";
     if (allEmpty) continue;
 
     if (C == null) {
@@ -44,6 +42,7 @@ export function buildMinModel({ consInputs, objInputs, kObjInput }) {
   if (p == null || q == null) throw new Error("Saisis p et q.");
   if (!isFinite(p) || !isFinite(q)) throw new Error("Objectif invalide.");
 
+  // ✅ k obligatoire en MIN
   const kLine = parseValue(kObjInput);
   if (kLine == null) throw new Error("En MIN, k est obligatoire (ex: 24).");
   if (!isFinite(kLine)) throw new Error("k invalide.");

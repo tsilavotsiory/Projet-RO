@@ -2,8 +2,7 @@
 import React, { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import "./MaxStyle.css";
 import { useLocation, useNavigate } from "react-router-dom";
-import { parseValue, parseCoeff, fmtEqIneq, fmtExpr } from "../../utils/math";
-import Table from "../../components/Table/Table";
+import { parseValue, parseCoeff, fmtEqIneq, fmtExpr, fmtSmart } from "../../utils/math";
 import GraphCanvas from "../../components/Graph/GraphCanvas";
 import { buildMaxModel } from "./MaxLogic";
 
@@ -37,16 +36,7 @@ function makeCon() {
   return { A: "", B: "", C: "", sense: "<=" };
 }
 
-const BTN_BLUE = { background: "#2563eb", borderColor: "#2563eb", color: "#fff" };
 const BTN_GRAY = { background: "#0b1220", borderColor: "rgba(255,255,255,.10)", color: "#e5e7eb" };
-
-function parseMaybeNum(s) {
-  if (s == null) return null;
-  const t = String(s).trim();
-  if (!t) return null;
-  const v = Number(t.replace(",", "."));
-  return Number.isFinite(v) ? v : NaN;
-}
 
 export default function MaxPage({ view }) {
   const navigate = useNavigate();
@@ -56,20 +46,23 @@ export default function MaxPage({ view }) {
   const [consInputs, setConsInputs] = useState(() => Array.from({ length: 3 }, () => makeCon()));
   const [objInputs, setObjInputs] = useState({ p: "", q: "" });
 
-  const [linesForTable, setLinesForTable] = useState(null);
-  const [cellData, setCellData] = useState({});
-  const [model, setModel] = useState(null);
+  // k optionnel (vide => 0)
+  const [kObj, setKObj] = useState("");
 
   // Graph
-  const [graphBaseModel, setGraphBaseModel] = useState(null);
   const [graphModel, setGraphModel] = useState(null);
 
-  // Graduations (pas)
-  const [scaleCmInputs, setScaleCmInputs] = useState({ xUnitCm: "", yUnitCm: "" });
-
   const animRef = useRef({ raf: 0 });
+  const [status, setStatus] = useState("Saisis les coefficients, puis clique sur « Voir le graphe ».");
 
-  const [status, setStatus] = useState("Saisis les coefficients, puis affiche le tableau.");
+  // ✅ cleanup animation (warning ESLint supprimé)
+  useEffect(() => {
+    const anim = animRef.current; // <- copie stable
+    return () => {
+      if (anim.raf) cancelAnimationFrame(anim.raf);
+      anim.raf = 0;
+    };
+  }, []);
 
   useEffect(() => {
     setConsInputs((prev) => {
@@ -80,6 +73,7 @@ export default function MaxPage({ view }) {
     });
   }, [m]);
 
+  // Restore (FORM)
   useEffect(() => {
     if (view !== "form") return;
     const saved = loadFull();
@@ -99,163 +93,27 @@ export default function MaxPage({ view }) {
     }
 
     if (saved.objInputs) setObjInputs(saved.objInputs);
-    if (saved.cellData) setCellData(saved.cellData);
-
-    if (saved.model) {
-      setModel(saved.model);
-      setLinesForTable(saved.linesForTable || null);
-    }
+    if (typeof saved.kObj === "string") setKObj(saved.kObj);
   }, [view]);
 
-  // Graph init
-  useEffect(() => {
-    if (view !== "graph") return;
-
-    const fromNav = location.state?.model;
-    const base = fromNav || loadFull()?.model || null;
-
-    setGraphBaseModel(base);
-    setGraphModel(null);
-    setScaleCmInputs({ xUnitCm: "", yUnitCm: "" });
-
-    function refreshBaseOnly() {
-      setGraphBaseModel(loadFull()?.model || null);
-    }
-    function onCustom(e) {
-      if (e?.detail?.key === KEY) refreshBaseOnly();
-    }
-    function onStorage(e) {
-      if (e.key === KEY) refreshBaseOnly();
-    }
-
-    window.addEventListener(EVENT_NAME, onCustom);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(EVENT_NAME, onCustom);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, [view, location.state]);
-
-  const preview = useMemo(() => {
-    const consParsed = consInputs
-      .map((c) => ({
-        A: parseCoeff(c.A),
-        B: parseCoeff(c.B),
-        C: parseValue(c.C),
-        sense: c.sense === ">=" ? ">=" : "<=",
-      }))
-      .filter((L) => !(L.A == null && L.B == null && L.C == null));
-
-    const p = parseCoeff(objInputs.p);
-    const q = parseCoeff(objInputs.q);
-
-    const anyMissingC = consParsed.some((L) => L.C == null);
-    if (anyMissingC) return null;
-
-    const okCons = consParsed.every((x) => Number.isFinite(x.A) && Number.isFinite(x.B) && Number.isFinite(x.C));
-    const okObj = Number.isFinite(p) && Number.isFinite(q);
-
-    if (!okCons || !okObj || consParsed.length === 0) return null;
-
-    return { lines: consParsed.map((L) => fmtEqIneq(L.A, L.B, L.C, L.sense)), obj: { p, q } };
-  }, [consInputs, objInputs]);
-
-  const buildAndPersist = useCallback(
-    (nextCellData, showErrors) => {
-      try {
-        const res = buildMaxModel({ consInputs, objInputs });
-
-        const extraPoints = Object.values(nextCellData || {})
-          .map((v) => v?.pt)
-          .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
-
-        const enriched = { ...res.model, extraPoints };
-
-        setModel(enriched);
-        setLinesForTable(res.linesForTable);
-
-        saveFull({
-          m: consInputs.length,
-          consInputs,
-          objInputs,
-          cellData: nextCellData || {},
-          linesForTable: res.linesForTable,
-          model: enriched,
-        });
-
-        return enriched;
-      } catch (e) {
-        if (showErrors) setStatus("Erreur: " + e.message);
-        return null;
-      }
-    },
-    [consInputs, objInputs]
-  );
-
-  function showTable() {
-    const enriched = buildAndPersist(cellData, true);
-    if (enriched) setStatus("Tableau affiché.");
-  }
-
-  useEffect(() => {
-    if (!model) return;
-    buildAndPersist(cellData, false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [consInputs, objInputs]);
-
-  function handleCellDataChange(next) {
-    setCellData(next);
-    if (!model) return;
-    buildAndPersist(next, false);
-  }
-
-  function goGraph() {
-    const current = model || buildAndPersist(cellData, true);
-    if (!current) return;
-    navigate("/max/graphe", { state: { model: current } });
-  }
-
-  function backToForm() {
-    navigate("/max");
-  }
-
-  function applyGraphScale() {
-    if (!graphBaseModel) {
-      setStatus("Erreur: aucun modèle chargé.");
-      return;
-    }
-
-    const xUnitCm = parseMaybeNum(scaleCmInputs.xUnitCm);
-    const yUnitCm = parseMaybeNum(scaleCmInputs.yUnitCm);
-
-    if (Number.isNaN(xUnitCm) || Number.isNaN(yUnitCm)) {
-      setStatus("Erreur: valeur invalide. Exemple: 500");
+  // ✅ Auto graphe + solution + animation
+  const startAutoGraph = useCallback((baseModel) => {
+    if (!baseModel) {
+      setGraphModel(null);
+      setStatus("Erreur: aucun modèle chargé. Reviens à la saisie puis clique « Voir le graphe ».");
       return;
     }
 
     if (animRef.current.raf) cancelAnimationFrame(animRef.current.raf);
     animRef.current.raf = 0;
 
-    const next = {
-      ...graphBaseModel,
+    setGraphModel({
+      ...baseModel,
       autoViewBox: true,
-      scaleCm: {
-        xUnitCm: xUnitCm == null ? null : xUnitCm,
-        yUnitCm: yUnitCm == null ? null : yUnitCm,
-      },
-      showSolution: false,
+      scaleCm: null,
+      showSolution: true,
       animT: 0,
-    };
-
-    setGraphModel(next);
-    setStatus("Graphe généré.");
-  }
-
-  function showSolution() {
-    if (!graphModel) {
-      setStatus("Génère d’abord le graphe.");
-      return;
-    }
+    });
 
     const start = performance.now();
     const dur = 900;
@@ -267,28 +125,121 @@ export default function MaxPage({ view }) {
       else animRef.current.raf = 0;
     };
 
-    if (animRef.current.raf) cancelAnimationFrame(animRef.current.raf);
     animRef.current.raf = requestAnimationFrame(loop);
     setStatus("");
+  }, []);
+
+  // Graph init + écoute storage (GRAPH)
+  useEffect(() => {
+    if (view !== "graph") return;
+
+    const fromNav = location.state?.model;
+    const base = fromNav || loadFull()?.model || null;
+
+    startAutoGraph(base);
+
+    function refresh() {
+      const b = loadFull()?.model || null;
+      startAutoGraph(b);
+    }
+    function onCustom(e) {
+      if (e?.detail?.key === KEY) refresh();
+    }
+    function onStorage(e) {
+      if (e.key === KEY) refresh();
+    }
+
+    window.addEventListener(EVENT_NAME, onCustom);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(EVENT_NAME, onCustom);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [view, location.state, startAutoGraph]);
+
+  // Preview : k vide => 0
+  const preview = useMemo(() => {
+    const consParsed = consInputs
+      .map((row) => {
+        const rawA = String(row?.A ?? "").trim();
+        const rawB = String(row?.B ?? "").trim();
+        const rawC = String(row?.C ?? "").trim();
+
+        const allEmpty = rawA === "" && rawB === "" && rawC === "";
+        if (allEmpty) return null;
+
+        return {
+          A: parseCoeff(rawA),
+          B: parseCoeff(rawB),
+          C: parseValue(rawC),
+          sense: row?.sense === ">=" ? ">=" : "<=",
+        };
+      })
+      .filter(Boolean);
+
+    if (consParsed.length === 0) return null;
+    if (consParsed.some((L) => L.C == null)) return null;
+
+    const okCons = consParsed.every((x) => Number.isFinite(x.A) && Number.isFinite(x.B) && Number.isFinite(x.C));
+    if (!okCons) return null;
+
+    const p = parseValue(objInputs.p);
+    const q = parseValue(objInputs.q);
+    if (p == null || q == null) return null;
+    if (!Number.isFinite(p) || !Number.isFinite(q)) return null;
+
+    const kParsed = parseValue(kObj);
+    if (kParsed != null && !Number.isFinite(kParsed)) return null;
+
+    const kLine = kParsed == null ? 0 : kParsed;
+
+    return {
+      lines: consParsed.map((L) => fmtEqIneq(L.A, L.B, L.C, L.sense)),
+      obj: { p, q, kLine },
+    };
+  }, [consInputs, objInputs, kObj]);
+
+  // Build + persist
+  const buildAndPersist = useCallback(
+    (showErrors) => {
+      try {
+        const res = buildMaxModel({ consInputs, objInputs });
+
+        const kParsed = parseValue(kObj);
+        if (kParsed != null && !isFinite(kParsed)) throw new Error("k invalide.");
+        const kLine = kParsed == null ? 0 : kParsed;
+
+        const enriched = {
+          ...res.model,
+          obj: { ...res.model.obj, kLine },
+          extraPoints: [],
+        };
+
+        saveFull({
+          m: consInputs.length,
+          consInputs,
+          objInputs,
+          kObj,
+          model: enriched,
+        });
+
+        return enriched;
+      } catch (e) {
+        if (showErrors) setStatus("Erreur: " + e.message);
+        return null;
+      }
+    },
+    [consInputs, objInputs, kObj]
+  );
+
+  function goGraph() {
+    const current = buildAndPersist(true);
+    if (!current) return;
+    navigate("/max/graphe", { state: { model: current } });
   }
 
-  function clearTableData() {
-    const next = {};
-    setCellData(next);
-    if (model) buildAndPersist(next, false);
-
-    const saved = loadFull() || {};
-    saveFull({
-      ...saved,
-      m: consInputs.length,
-      consInputs,
-      objInputs,
-      cellData: next,
-      linesForTable: saved.linesForTable || linesForTable,
-      model: saved.model || model,
-    });
-
-    setStatus("Tableau vidé.");
+  function backToForm() {
+    navigate("/max");
   }
 
   function clearInputsOnly() {
@@ -297,17 +248,10 @@ export default function MaxPage({ view }) {
 
     setConsInputs(nextCons);
     setObjInputs(nextObj);
+    setKObj("");
 
-    const saved = loadFull() || {};
-    saveFull({
-      ...saved,
-      m: nextCons.length,
-      consInputs: nextCons,
-      objInputs: nextObj,
-      cellData: saved.cellData || cellData,
-      linesForTable: saved.linesForTable || linesForTable,
-      model: saved.model || model,
-    });
+    localStorage.removeItem(KEY);
+    emitChanged();
 
     setStatus("Saisie effacée.");
   }
@@ -328,40 +272,13 @@ export default function MaxPage({ view }) {
           </div>
         </div>
 
+        {status?.startsWith("Erreur:") && (
+          <div className="status">
+            <span className="pillErr">{status}</span>
+          </div>
+        )}
+
         <div className="graphGrid">
-          <aside className="graphLeft">
-            <div className="label">Graduations</div>
-
-            <div style={{ display: "grid", gap: 10 }}>
-              <input
-                className="input"
-                placeholder="Axe x : pas (ex: 500)"
-                value={scaleCmInputs.xUnitCm}
-                onChange={(e) => setScaleCmInputs((s) => ({ ...s, xUnitCm: e.target.value }))}
-              />
-              <input
-                className="input"
-                placeholder="Axe y : pas (ex: 1000)"
-                value={scaleCmInputs.yUnitCm}
-                onChange={(e) => setScaleCmInputs((s) => ({ ...s, yUnitCm: e.target.value }))}
-              />
-
-              <button className="btn btnPrimary" onClick={applyGraphScale} style={BTN_BLUE} disabled={!graphBaseModel}>
-                Générer le graphe
-              </button>
-
-              <button className="btn" onClick={showSolution} style={BTN_GRAY} disabled={!graphModel}>
-                Montrer la solution
-              </button>
-            </div>
-
-            {status?.startsWith("Erreur:") && (
-              <div className="status" style={{ marginTop: 12 }}>
-                <span className="pillErr">{status}</span>
-              </div>
-            )}
-          </aside>
-
           <section className="graphRight">
             <GraphCanvas model={graphModel} onError={(msg) => setStatus("Erreur: " + msg)} />
           </section>
@@ -374,7 +291,7 @@ export default function MaxPage({ view }) {
   return (
     <div className="container">
       <div className="card panel formCard">
-        <h1 className="pageTitle">MAX — Saisie & Tableau</h1>
+        <h1 className="pageTitle">MAX — Saisie</h1>
 
         <div className="formScroll">
           <div className="sep">
@@ -410,18 +327,24 @@ export default function MaxPage({ view }) {
                     className="input"
                     placeholder={`A${i + 1}`}
                     value={c.A}
-                    onChange={(e) => setConsInputs((p) => p.map((v, idx) => (idx === i ? { ...v, A: e.target.value } : v)))}
+                    onChange={(e) =>
+                      setConsInputs((p) => p.map((v, idx) => (idx === i ? { ...v, A: e.target.value } : v)))
+                    }
                   />
                   <input
                     className="input"
                     placeholder={`B${i + 1}`}
                     value={c.B}
-                    onChange={(e) => setConsInputs((p) => p.map((v, idx) => (idx === i ? { ...v, B: e.target.value } : v)))}
+                    onChange={(e) =>
+                      setConsInputs((p) => p.map((v, idx) => (idx === i ? { ...v, B: e.target.value } : v)))
+                    }
                   />
                   <select
                     className="select"
                     value={c.sense || "<="}
-                    onChange={(e) => setConsInputs((p) => p.map((v, idx) => (idx === i ? { ...v, sense: e.target.value } : v)))}
+                    onChange={(e) =>
+                      setConsInputs((p) => p.map((v, idx) => (idx === i ? { ...v, sense: e.target.value } : v)))
+                    }
                   >
                     <option value="<=">≤</option>
                     <option value=">=">≥</option>
@@ -430,7 +353,9 @@ export default function MaxPage({ view }) {
                     className="input"
                     placeholder={`C${i + 1}`}
                     value={c.C}
-                    onChange={(e) => setConsInputs((p) => p.map((v, idx) => (idx === i ? { ...v, C: e.target.value } : v)))}
+                    onChange={(e) =>
+                      setConsInputs((p) => p.map((v, idx) => (idx === i ? { ...v, C: e.target.value } : v)))
+                    }
                   />
                 </div>
               </div>
@@ -440,12 +365,31 @@ export default function MaxPage({ view }) {
           <div className="sep">
             <div className="label">Objectif MAX (p·x₁ + q·x₂)</div>
             <div className="row2" style={{ marginTop: 10 }}>
-              <input className="input" placeholder="p" value={objInputs.p} onChange={(e) => setObjInputs((o) => ({ ...o, p: e.target.value }))} />
-              <input className="input" placeholder="q" value={objInputs.q} onChange={(e) => setObjInputs((o) => ({ ...o, q: e.target.value }))} />
+              <input
+                className="input"
+                placeholder="p"
+                value={objInputs.p}
+                onChange={(e) => setObjInputs((o) => ({ ...o, p: e.target.value }))}
+              />
+              <input
+                className="input"
+                placeholder="q"
+                value={objInputs.q}
+                onChange={(e) => setObjInputs((o) => ({ ...o, q: e.target.value }))}
+              />
             </div>
+
+            <div className="label" style={{ marginTop: 12 }}>
+              Droite objectif (graphe) : p·x₁ + q·x₂ = k
+            </div>
+            <input
+              className="input"
+              placeholder="k (optionnel) — vide = 0"
+              value={kObj}
+              onChange={(e) => setKObj(e.target.value)}
+            />
           </div>
 
-          {/* ✅ MODÈLE remis juste ici (sous Objectif) */}
           <div className="eqBox">
             <div className="eqBoxTitle">Modèle</div>
             {!preview ? (
@@ -462,8 +406,13 @@ export default function MaxPage({ view }) {
                     ))}
                   </div>
                 </div>
+
                 <div className="eqLines" style={{ marginTop: 10, fontWeight: 900 }}>
                   MAX ({fmtExpr(preview.obj.p, preview.obj.q)})
+                </div>
+
+                <div className="eqLines" style={{ marginTop: 6, fontWeight: 800 }}>
+                  Droite objectif : {fmtExpr(preview.obj.p, preview.obj.q)} = {fmtSmart(preview.obj.kLine)}
                 </div>
               </>
             )}
@@ -471,30 +420,12 @@ export default function MaxPage({ view }) {
 
           <div className="sep">
             <div className="actionsRow">
-              <button className="btn btnPrimary" onClick={showTable} style={BTN_BLUE}>
-                Afficher tableau
-              </button>
-
               <button className="btn" onClick={goGraph} disabled={!preview} style={BTN_GRAY}>
                 Voir le graphe →
               </button>
-
-              <button className="btn" onClick={clearTableData} style={BTN_GRAY} disabled={!linesForTable}>
-                Vider tableau
-              </button>
             </div>
 
-            {linesForTable && (
-              <Table
-                linesForTable={linesForTable}
-                cellData={cellData}
-                setCellData={setCellData}
-                setStatus={setStatus}
-                onCellDataChange={handleCellDataChange}
-              />
-            )}
-
-            <div className="status">{status.startsWith("Erreur:") ? <span className="pillErr">{status}</span> : status}</div>
+            <div className="status">{status?.startsWith("Erreur:") ? <span className="pillErr">{status}</span> : status}</div>
           </div>
         </div>
       </div>
