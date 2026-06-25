@@ -33,7 +33,7 @@ function clampInt(n, a, b) {
 }
 
 function makeCon() {
-  return { A: "", B: "", C: "" };
+  return { A: "", B: "", C: "", sense: ">=" }; // ✅ sens modifiable
 }
 
 const BTN_GRAY = { background: "#0b1220", borderColor: "rgba(255,255,255,.10)", color: "#e5e7eb" };
@@ -53,9 +53,9 @@ export default function MinPage({ view }) {
   const animRef = useRef({ raf: 0 });
   const [status, setStatus] = useState("Saisis les coefficients, puis clique sur « Voir le graphe ».");
 
-  // ✅ cleanup animation (warning ESLint supprimé)
+  // ✅ cleanup animation
   useEffect(() => {
-    const anim = animRef.current; // <- copie stable
+    const anim = animRef.current;
     return () => {
       if (anim.raf) cancelAnimationFrame(anim.raf);
       anim.raf = 0;
@@ -85,6 +85,7 @@ export default function MinPage({ view }) {
         A: c?.A ?? "",
         B: c?.B ?? "",
         C: c?.C ?? "",
+        sense: c?.sense ?? ">=", // ✅ restore sens
       }));
       setConsInputs(restored);
       if (typeof saved.m !== "number") setM(restored.length || 3);
@@ -157,8 +158,6 @@ export default function MinPage({ view }) {
 
   // Preview (ignore lignes vides) + p,q,k obligatoires
   const preview = useMemo(() => {
-    const sense = ">=";
-
     const consParsed = consInputs
       .map((row) => {
         const rawA = String(row?.A ?? "").trim();
@@ -166,6 +165,8 @@ export default function MinPage({ view }) {
         const rawC = String(row?.C ?? "").trim();
         const allEmpty = rawA === "" && rawB === "" && rawC === "";
         if (allEmpty) return null;
+
+        const sense = row?.sense === "<=" ? "<=" : ">=";
 
         return {
           A: parseCoeff(rawA),
@@ -190,7 +191,7 @@ export default function MinPage({ view }) {
     if (!Number.isFinite(p) || !Number.isFinite(q) || !Number.isFinite(k)) return null;
 
     return {
-      lines: consParsed.map((L) => fmtEqIneq(L.A, L.B, L.C, sense)),
+      lines: consParsed.map((L) => fmtEqIneq(L.A, L.B, L.C, L.sense)), // ✅ sens par contrainte
       obj: { p, q, k },
     };
   }, [consInputs, objInputs, kObj]);
@@ -299,7 +300,7 @@ export default function MinPage({ view }) {
           </div>
 
           <div className="sep">
-            <div className="label">Contraintes (A·x₁ + B·x₂ ≥ C)</div>
+            <div className="label">Contraintes (A·x₁ + B·x₂ ? C)</div>
 
             <div className="actionsRow" style={{ marginTop: 8, marginBottom: 6 }}>
               <button className="btn" onClick={clearInputsOnly} style={BTN_GRAY}>
@@ -327,14 +328,21 @@ export default function MinPage({ view }) {
                     }
                   />
 
-                  <input
+                  {/* ✅ choix du sens ≥ ou ≤ */}
+                  <select
                     className="input"
-                    value="≥"
-                    readOnly
-                    tabIndex={-1}
-                    style={{ textAlign: "center", fontWeight: 900, cursor: "default" }}
+                    value={c.sense || ">="}
+                    onChange={(e) =>
+                      setConsInputs((p) =>
+                        p.map((v, idx) => (idx === i ? { ...v, sense: e.target.value } : v))
+                      )
+                    }
+                    style={{ textAlign: "center", fontWeight: 900, cursor: "pointer" }}
                     aria-label="sens de la contrainte"
-                  />
+                  >
+                    <option value=">=">≥</option>
+                    <option value="<=">≤</option>
+                  </select>
 
                   <input
                     className="input"

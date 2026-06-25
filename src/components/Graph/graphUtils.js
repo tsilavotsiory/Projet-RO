@@ -196,7 +196,6 @@ function computeAutoViewBox(model, solved) {
     ymax = Math.max(ymax, p.y);
   }
 
-  // ✅ style PDF: inclure (0,0) si possible pour avoir les axes visibles
   xmin = Math.min(xmin, 0);
   xmax = Math.max(xmax, 0);
   ymin = Math.min(ymin, 0);
@@ -625,21 +624,17 @@ function pickSolutionBoxPos(viewport, plotRect, cBest, boxW, boxH, avoidRects = 
   const plot = inflateRect({ x: plotRect.x, y: plotRect.y, w: plotRect.w, h: plotRect.h }, 8);
 
   const candidates = [
-    // priorité: en dehors du graphe à droite
     { x: plotRect.x + plotRect.w + margin, y: cBest.y - boxH / 2 },
     { x: plotRect.x + plotRect.w + margin, y: plotRect.y + 10 },
     { x: plotRect.x + plotRect.w + margin, y: plotRect.y + plotRect.h - boxH - 10 },
 
-    // à gauche
     { x: plotRect.x - margin - boxW, y: cBest.y - boxH / 2 },
     { x: plotRect.x - margin - boxW, y: plotRect.y + 10 },
     { x: plotRect.x - margin - boxW, y: plotRect.y + plotRect.h - boxH - 10 },
 
-    // au-dessus / en dessous (centré)
     { x: plotRect.x + plotRect.w / 2 - boxW / 2, y: plotRect.y - margin - boxH },
     { x: plotRect.x + plotRect.w / 2 - boxW / 2, y: plotRect.y + plotRect.h + margin },
 
-    // coins canvas
     { x: viewport.width - boxW - 10, y: 10 },
     { x: 10, y: 10 },
     { x: viewport.width - boxW - 10, y: viewport.height - boxH - 10 },
@@ -661,7 +656,6 @@ function pickSolutionBoxPos(viewport, plotRect, cBest, boxW, boxH, avoidRects = 
     const dy = y + boxH / 2 - cBest.y;
     const dist = Math.hypot(dx, dy);
 
-    // score: éviter équations + graphe d'abord, puis distance
     const score = overlapAvoid * 50 + overlapPlot * 40 + dist * 0.2;
 
     if (!best || score < best.score) best = { r, score, overlapAvoid, overlapPlot };
@@ -703,10 +697,8 @@ export function drawGraph(ctx, viewport, model) {
   const showSolution = !!model.showSolution;
   const t = Math.max(0, Math.min(1, Number(model.animT ?? (showSolution ? 1 : 0))));
 
-  // ✅ baseBox en let (on pourra forcer style PDF)
   let baseBox = model.autoViewBox ? computeAutoViewBox(model, solved) : model.viewBox || { xmin: -2, xmax: 7, ymin: -2, ymax: 7 };
 
-  // ✅ style PDF : si "petit repère", on force [-2..7] et graduations entières
   const PDF_BOX = { xmin: -2, xmax: 7, ymin: -2, ymax: 7 };
   const smallRange = baseBox.xmax - baseBox.xmin <= 12 && baseBox.ymax - baseBox.ymin <= 12;
 
@@ -728,7 +720,6 @@ export function drawGraph(ctx, viewport, model) {
   const rangeX = baseBox.xmax - baseBox.xmin;
   const rangeY = baseBox.ymax - baseBox.ymin;
 
-  // ✅ PDF-like: repère petit => pas=1
   const fallbackStepX = rangeX <= 12 ? 1 : niceStep(rangeX);
   const fallbackStepY = rangeY <= 12 ? 1 : niceStep(rangeY);
 
@@ -744,11 +735,10 @@ export function drawGraph(ctx, viewport, model) {
   const xr = xmax - xmin;
   const yr = ymax - ymin;
 
-  // ✅ Layout "PDF-like" : on utilise le canvas (pas 430x420 au centre)
-  const PAD_L = 85; // place pour labels/ticks Y
-  const PAD_B = 85; // place pour labels/ticks X
-  const PAD_T = 55; // place en haut pour équations
-  const PAD_R = showSolution ? 280 : 120; // place à droite (solution box)
+  const PAD_L = 85;
+  const PAD_B = 85;
+  const PAD_T = 55;
+  const PAD_R = showSolution ? 280 : 120;
 
   const availW = Math.max(240, W - PAD_L - PAD_R);
   const availH = Math.max(240, H - PAD_T - PAD_B);
@@ -956,9 +946,12 @@ export function drawGraph(ctx, viewport, model) {
       ctx.restore();
     }
 
+    // ✅ AJOUT: z = valeur optimale (best.v)
+    const zLine = `z = ${fmtSmart(best.v)}`;
+
     const lines = isMax
-      ? [`x₁ = ${fmtSmart(best.pt.x)}`, `x₂ = ${fmtSmart(best.pt.y)}`]
-      : [`x₁ = ${fmtSmart(best.pt.x)}  et  x₂ = ${fmtSmart(best.pt.y)}`];
+      ? [`x₁ = ${fmtSmart(best.pt.x)}`, `x₂ = ${fmtSmart(best.pt.y)}`, zLine]
+      : [`x₁ = ${fmtSmart(best.pt.x)}`, `x₂ = ${fmtSmart(best.pt.y)}`, zLine];
 
     const { boxW, boxH } = measureSolutionBox(ctx, lines);
     const r = pickSolutionBoxPos(viewport, plotRect, cBest, boxW, boxH, labelRects);

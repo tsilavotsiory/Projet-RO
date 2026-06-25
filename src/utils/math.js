@@ -106,4 +106,4 @@ export function fmtEqEQ(A, B, C) {
 
 export function fmtEqIneq(A, B, C, sense) {
   return `${fmtExpr(A, B)} ${senseSymbol(sense)} ${C}`;
-}
+} 

@@ -2,7 +2,6 @@
 import { parseValue, parseCoeff } from "../../utils/math";
 
 export function buildMinModel({ consInputs, objInputs, kObjInput }) {
-  const sense = ">=";
   const cons = [];
 
   for (let i = 0; i < consInputs.length; i++) {
@@ -29,6 +28,9 @@ export function buildMinModel({ consInputs, objInputs, kObjInput }) {
     if (Math.abs(A) < 1e-12 && Math.abs(B) < 1e-12) {
       throw new Error(`Contrainte ${i + 1}: A et B ne peuvent pas être tous les deux nuls.`);
     }
+
+    // ✅ sens choisi par l'utilisateur (>= ou <=). Défaut: >=
+    const sense = row.sense === "<=" ? "<=" : ">=";
 
     cons.push({ A, B, C, sense });
   }
